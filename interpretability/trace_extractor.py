@@ -6,21 +6,6 @@ import numpy as np
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-
-def load_model_and_tokenizer(model_name="meta-llama/Llama-2-7b-hf"):
-    """
-    Load a transformer model and tokenizer with hidden state outputs enabled.
-    """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        output_hidden_states=True,
-        torch_dtype=torch.float16,
-        device_map="auto"
-    )
-    return model, tokenizer
-
-
 def extract_trace(prompt, model, tokenizer, top_k=5):
     """
     Perform a full model pass and extract a trace:
@@ -28,6 +13,7 @@ def extract_trace(prompt, model, tokenizer, top_k=5):
     - per-token top-k predictions
     - entropy of the token distribution
     - full layerwise hidden states for each token
+    Returns a dict with per-token diagnostic data.
     """
     device = next(model.parameters()).device
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -35,7 +21,7 @@ def extract_trace(prompt, model, tokenizer, top_k=5):
     with torch.no_grad():
         outputs = model(**inputs)
 
-    hidden_states = outputs.hidden_states  # (num_layers + 1, batch, seq_len, hidden_size)
+    hidden_states = outputs.hidden_states  # (num_layers+1, batch, seq_len, hidden_size)
     logits = outputs.logits  # (batch, seq_len, vocab_size)
     input_ids = inputs["input_ids"][0]
     tokens = tokenizer.convert_ids_to_tokens(input_ids)
@@ -52,7 +38,8 @@ def extract_trace(prompt, model, tokenizer, top_k=5):
         topk_tokens = tokenizer.convert_ids_to_tokens(topk_indices)
         topk_probs = topk.values.tolist()
 
-        entropy = -torch.sum(probs * probs.log()).item()
+        entropy = -torch.sum(probs * torch.log(probs + 1e-8)).item()
+
         token_hidden_states = [layer[0, i].cpu().numpy().tolist() for layer in hidden_states]
 
         trace.append({
@@ -62,7 +49,7 @@ def extract_trace(prompt, model, tokenizer, top_k=5):
             "top_k_tokens": topk_tokens,
             "top_k_probs": topk_probs,
             "entropy": entropy,
-            "hidden_states": token_hidden_states
+            "hidden_states": token_hidden_states  # list of vectors per layer
         })
 
     return {
@@ -70,10 +57,25 @@ def extract_trace(prompt, model, tokenizer, top_k=5):
         "trace": trace
     }
 
+def extract_hidden_state_sequence(prompt, model, tokenizer, layer_idx: int = -1):
+    """
+    Extract token-wise hidden states from a specific model layer.
+    Returns a List[np.array] of shape [num_tokens x hidden_dim]
+    """
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    hidden_states = outputs.hidden_states  # List[Tensor]: (layer, batch, seq_len, dim)
+    selected_layer = hidden_states[layer_idx][0]  # shape: (seq_len, dim)
+
+    return [vec.cpu().numpy() for vec in selected_layer]
 
 def save_trace_to_file(trace_data, filepath):
     """
-    Save trace data as a JSON file.
+    Save detailed trace data (from extract_trace) to a JSON file.
     """
     with open(filepath, "w") as f:
         json.dump(trace_data, f, indent=2)
