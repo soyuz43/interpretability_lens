@@ -1,13 +1,29 @@
 # experiments/concept_decay.py
 
+import os
+import json
+from datetime import datetime
+
+import matplotlib.pyplot as plt
+import numpy as np
+
 from interpretability.trace_extractor import extract_trace
 from interpretability.projection import project_hidden_states
 from interpretability.divergence_tracker import compute_semantic_drift, measure_half_life
 from interpretability.injector import inject_probe
-from interpretability import utils
 
-import matplotlib.pyplot as plt
-import numpy as np
+
+def log_results(results: dict, folder: str = "logs") -> str:
+    """
+    Save results dictionary to a timestamped JSON file in the logs directory.
+    """
+    os.makedirs(folder, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(folder, f"concept_decay_{timestamp}.json")
+    with open(filename, "w") as f:
+        json.dump(results, f, indent=2)
+    return filename
+
 
 def run_concept_decay_experiment(
     base_prompt: str,
@@ -15,7 +31,8 @@ def run_concept_decay_experiment(
     inject_pos: str,
     model,
     tokenizer,
-    visualize: bool = True
+    visualize: bool = True,
+    save: bool = True
 ) -> dict:
     """
     Run a full concept decay experiment:
@@ -23,7 +40,18 @@ def run_concept_decay_experiment(
       2. Extract hidden states during inference.
       3. Project hidden states to 2D.
       4. Analyze semantic drift.
-      5. Return metrics + optional visualization.
+      5. Return metrics, optionally visualize and log output.
+
+    Parameters:
+    - base_prompt: str – initial neutral prompt
+    - concept: str – concept word/phrase to inject
+    - inject_pos: str – 'start', 'middle', or 'end'
+    - model, tokenizer – HuggingFace-compatible model objects
+    - visualize: bool – whether to show the drift curve
+    - save: bool – whether to save the results JSON to disk
+
+    Returns:
+    - results: dict – containing arc length, half-life, drift curve, and prompt metadata
     """
     # Step 1: Construct probe-injected prompt
     full_prompt = inject_probe(base_prompt, concept, position=inject_pos)
@@ -39,14 +67,15 @@ def run_concept_decay_experiment(
     half_life = measure_half_life(drift_metrics["distance_from_origin"])
 
     results = {
+        "concept": concept,
+        "inject_position": inject_pos,
+        "injected_prompt": full_prompt,
         "arc_length": drift_metrics["arc_length"],
         "half_life": half_life,
-        "concept": concept,
-        "injected_prompt": full_prompt,
-        "drift_curve": drift_metrics["distance_from_origin"]
+        "drift_curve": drift_metrics["distance_from_origin"],
     }
 
-    # Step 5: Optional visualization
+    # Step 5: Visualization
     if visualize:
         plt.figure(figsize=(10, 5))
         plt.plot(drift_metrics["distance_from_origin"], label="Distance from origin")
@@ -61,5 +90,10 @@ def run_concept_decay_experiment(
         plt.legend()
         plt.tight_layout()
         plt.show()
+
+    # Step 6: Optional logging
+    if save:
+        filename = log_results(results)
+        print(f"[✓] Results logged to: {filename}")
 
     return results

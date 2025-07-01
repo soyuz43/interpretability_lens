@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--concept", type=str, help="Concept to inject (optional)")
     parser.add_argument("--inject_pos", type=str, default="middle", help="Where to inject the concept")
     parser.add_argument("--no_visual", action="store_true", help="Disable plot visualization")
+    parser.add_argument("--layer", type=int, default=-1, help="Model layer to extract from (default: last layer)")
 
     args = parser.parse_args()
 
@@ -32,19 +33,20 @@ def main():
     print("Loading LLaMA 3B model...")
     model, tokenizer = load_llama3_3b()
 
-    # Step 1: Run experiment
+    # Step 1: Run selected experiment
     results = run_concept_decay_experiment(
         base_prompt=args.prompt,
-        concept=args.concept or "",
+        concept=args.concept,
         inject_pos=args.inject_pos,
         model=model,
         tokenizer=tokenizer,
-        visualize=not args.no_visual
+        visualize=not args.no_visual,
+        layer_idx=args.layer
     )
 
     # Step 2: Print metrics
     print(f"\n--- Semantic Drift Results ---")
-    print("Concept Injected:", results["concept"])
+    print("Concept Injected:", results.get("concept", "<none>"))
     print("Arc Length:", round(results["arc_length"], 4))
     print("Half-life (token index):", results["half_life"])
     print("Injected Prompt:\n", results["injected_prompt"])
