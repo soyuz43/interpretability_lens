@@ -1,0 +1,7 @@
+torch
+transformers
+scikit-learn
+umap-learn
+matplotlib
+pandas
+numpy
