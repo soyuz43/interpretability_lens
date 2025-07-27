@@ -11,22 +11,38 @@ from interpretability.projection import project_hidden_states
 from interpretability.divergence_tracker import compute_semantic_drift, measure_half_life
 from interpretability.injector import inject_probe
 
-def log_results(results: dict, folder: str = "logs", fig: plt.Figure = None) -> str:
+def log_results(results: dict, folder: str = "logs", fig: plt.Figure = None, batch_name: str = None) -> str:
     """
     Save results dictionary to a timestamped JSON file in the logs directory.
     Optionally save a matplotlib figure to a PNG file with the same timestamp.
+    If batch_name is provided, saves within a subdirectory logs/batch_name/.
     """
-    os.makedirs(folder, exist_ok=True)
+    # Determine the final save directory
+    final_folder = folder
+    if batch_name:
+        final_folder = os.path.join(folder, batch_name)
+        
+    os.makedirs(final_folder, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    json_filename = os.path.join(folder, f"concept_decay_{timestamp}.json")
+    json_filename = os.path.join(final_folder, f"concept_decay_{timestamp}.json")
 
     # Save JSON results
     with open(json_filename, "w") as f:
-        json.dump(results, f, indent=2)
+        # Ensure serializability (already handled in run_concept_decay_experiment, 
+        # but good practice to keep it here too if this function is called elsewhere)
+        serializable_results = {
+            "concept": results["concept"],
+            "inject_position": results["inject_position"],
+            "injected_prompt": results["injected_prompt"],
+            "arc_length": float(results["arc_length"]),
+            "half_life": int(results["half_life"]),
+            "drift_curve": [float(val) for val in results["drift_curve"]],
+        }
+        json.dump(serializable_results, f, indent=2)
 
     # Save plot if provided
     if fig is not None:
-        png_filename = os.path.join(folder, f"concept_decay_{timestamp}.png")
+        png_filename = os.path.join(final_folder, f"concept_decay_{timestamp}.png")
         fig.savefig(png_filename, dpi=300, bbox_inches='tight') # Save with high DPI and tight layout
         print(f"[✓] Plot saved to: {png_filename}")
 
@@ -40,7 +56,8 @@ def run_concept_decay_experiment(
     tokenizer,
     visualize: bool = True,
     save: bool = True,
-    layer_idx: int = -1 # Add layer_idx parameter
+    layer_idx: int = -1, # Add layer_idx parameter
+    batch_name: str = None # Add batch_name parameter
 ) -> dict:
     """
     Run a full concept decay experiment:
@@ -57,6 +74,7 @@ def run_concept_decay_experiment(
     - visualize: bool – whether to show the drift curve
     - save: bool – whether to save the results JSON and plot to disk
     - layer_idx: int - Model layer to extract from (default: last layer)
+    - batch_name: str - Optional name for batch run, creates subdirectory in logs/
     Returns:
     - results: dict – containing arc length, half-life, drift curve, and prompt metadata
     """
@@ -106,8 +124,8 @@ def run_concept_decay_experiment(
 
     # Step 6: Optional logging (including saving the plot)
     if save:
-        # Pass the figure object to log_results
-        filename = log_results(results, fig=fig) # fig will be saved inside log_results
+        # Pass the figure object and batch_name to log_results
+        filename = log_results(results, fig=fig, batch_name=batch_name) # Pass batch_name
         print(f"[✓] Results logged to: {filename}")
         # Close the figure after saving
         if fig is not None:
