@@ -1,1 +1,3 @@
 1.  python run_experiment.py --prompt "The weather today is nice and sunny." --concept "happiness" --inject_pos start --inject_pos middle --inject_pos end --batch_name "happiness_position_comparison"
+
+2. python run_experiment.py --prompt "The weather today is nice and sunny." --concept "sadness" --inject_pos start --inject_pos middle --inject_pos end --batch_name "sadness_position_comparison"
