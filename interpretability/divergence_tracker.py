@@ -43,21 +43,32 @@ def compute_semantic_drift(projected_coords: np.ndarray) -> Dict[str, object]:
     }
 
 
-def measure_half_life(influence_curve: List[float], threshold: float = 0.5) -> int:
+def measure_half_life(
+    influence_curve, threshold=0.5, relative_to="first", smooth=None, require_k=1
+):
     """
-    Given a list of values representing conceptual influence decay
-    (e.g. distance from initial state), find the point where influence
-    drops below a given threshold (defaults to 50% of max).
-    
-    Returns the token index where this decay threshold is crossed.
+    Half-life = first index where curve < threshold * reference.
+    reference: 'first' or 'max'
+    smooth: None, or ('ema', alpha) where alpha in (0,1]
+    require_k: require k consecutive points below threshold
     """
     if not influence_curve:
         return -1
+    x = list(influence_curve)
+    if smooth and smooth[0] == "ema":
+        alpha = float(smooth[1])
+        y = [x[0]]
+        for v in x[1:]:
+            y.append(alpha*v + (1-alpha)*y[-1])
+        x = y
+    ref = x[0] if relative_to == "first" else max(x)
+    consec = 0
+    for i, v in enumerate(x):
+        if v < ref * threshold:
+            consec += 1
+            if consec >= require_k:
+                return i
+        else:
+            consec = 0
+    return len(x) - 1
 
-    peak = influence_curve[0]
-    for i, val in enumerate(influence_curve):
-        if val >= peak * threshold:
-            continue
-        return i
-
-    return len(influence_curve) - 1
