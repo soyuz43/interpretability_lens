@@ -120,24 +120,25 @@ def run_concept_decay_experiment(
         plt.axvline(x=half_life, color="g", linestyle=":", label="Half-life index")
         plt.title(f"Concept Decay: '{concept}' Influence Over Tokens")
         plt.xlabel("Token Index")
-        plt.ylabel("Cosine Distance from Start")
+        plt.ylabel("Distance from start (projection space)")
         plt.legend()
         plt.tight_layout()
         # Don't call plt.show() here yet
 
-    # Step 6: Optional logging (including saving the plot)
+    # Step 6: Optional logging, visualization, and cleanup
     if save:
-        # Pass the figure object and batch_name to log_results
-        filename = log_results(results, fig=fig, batch_name=batch_name) # Pass batch_name
+        # Save results and plot (if a figure was created)
+        filename = log_results(results, fig=fig, batch_name=batch_name)
         print(f"[✓] Results logged to: {filename}")
-        # Close the figure after saving
-        if fig is not None:
-            plt.close(fig)
-            fig = None
-    elif fig is not None:
-         # If not saving but we created a figure (only for visualization), close it
-         plt.close(fig)
-         fig = None
+
+    # Show the plot only if visualize is True and a figure was created
+    if visualize and fig is not None:
+        plt.show()
+
+    # Always close the figure if it exists, to free memory
+    if fig is not None:
+        plt.close(fig)
+        fig = None
 
     # Show the plot only if visualize is True and we created one
     if visualize and fig is not None:

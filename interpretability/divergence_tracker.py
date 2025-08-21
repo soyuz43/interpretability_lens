@@ -43,21 +43,46 @@ def compute_semantic_drift(projected_coords: np.ndarray) -> Dict[str, object]:
     }
 
 
-def measure_half_life(influence_curve: List[float], threshold: float = 0.5) -> int:
+def measure_half_life(
+    influence_curve: List[float],
+    threshold: float = 0.5,
+    smooth_ema_alpha: float = 0.2,   # None or 0 to disable smoothing
+    require_k: int = 2,              # consecutive points below threshold
+    post_peak: bool = True           # start search after argmax
+) -> int:
     """
-    Given a list of values representing conceptual influence decay
-    (e.g. distance from initial state), find the point where influence
-    drops below a given threshold (defaults to 50% of max).
-    
-    Returns the token index where this decay threshold is crossed.
+    Half-life = first index (optionally post-peak) where the curve stays below
+    threshold * reference for k consecutive points.
+    - reference is max(curve) on the (optionally) smoothed series.
+    - returns last index if it never crosses.
     """
     if not influence_curve:
         return -1
 
-    peak = influence_curve[0]
-    for i, val in enumerate(influence_curve):
-        if val >= peak * threshold:
-            continue
-        return i
+    x = list(influence_curve)
 
-    return len(influence_curve) - 1
+    # optional smoothing
+    if smooth_ema_alpha and smooth_ema_alpha > 0:
+        y = [x[0]]
+        a = float(smooth_ema_alpha)
+        for v in x[1:]:
+            y.append(a * v + (1 - a) * y[-1])
+        x = y
+
+    ref = max(x)
+    if ref <= 0:
+        return len(x) - 1  # degenerate flat/zero
+
+    start_idx = int(np.argmax(x)) if post_peak else 0
+    thresh = threshold * ref
+
+    consec = 0
+    for i in range(start_idx, len(x)):
+        if x[i] < thresh:
+            consec += 1
+            if consec >= require_k:
+                return i
+        else:
+            consec = 0
+    return len(x) - 1
+
