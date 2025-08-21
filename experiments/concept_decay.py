@@ -120,7 +120,7 @@ def run_concept_decay_experiment(
         plt.axvline(x=half_life, color="g", linestyle=":", label="Half-life index")
         plt.title(f"Concept Decay: '{concept}' Influence Over Tokens")
         plt.xlabel("Token Index")
-        plt.ylabel("Cosine Distance from Start")
+        plt.ylabel("Distance from start (projection space)")
         plt.legend()
         plt.tight_layout()
         # Don't call plt.show() here yet
