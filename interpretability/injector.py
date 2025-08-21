@@ -14,6 +14,8 @@ def inject_probe(base_prompt: str, concept: str, position: str = "middle") -> st
     Returns:
         str: The modified prompt with the concept inserted.
     """
+    if concept is None or str(concept).strip() == "":
+        return base_prompt
     tokens = base_prompt.strip().split()
 
     if position == "start":

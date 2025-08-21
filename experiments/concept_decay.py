@@ -79,7 +79,10 @@ def run_concept_decay_experiment(
     - results: dict – containing arc length, half-life, drift curve, and prompt metadata
     """
     # Step 1: Construct probe-injected prompt
-    full_prompt = inject_probe(base_prompt, concept, position=inject_pos)
+    if concept is None:
+        full_prompt = base_prompt
+    else:
+        full_prompt = inject_probe(base_prompt, concept, position=inject_pos)
     
     # Step 2: Run model and capture hidden state trajectory
     # Use the specific layer extraction function and pass layer_idx
