@@ -44,27 +44,41 @@ def compute_semantic_drift(projected_coords: np.ndarray) -> Dict[str, object]:
 
 
 def measure_half_life(
-    influence_curve, threshold=0.5, relative_to="first", smooth=None, require_k=1
-):
+    influence_curve: List[float],
+    threshold: float = 0.5,
+    smooth_ema_alpha: float = 0.2,   # None or 0 to disable smoothing
+    require_k: int = 2,              # consecutive points below threshold
+    post_peak: bool = True           # start search after argmax
+) -> int:
     """
-    Half-life = first index where curve < threshold * reference.
-    reference: 'first' or 'max'
-    smooth: None, or ('ema', alpha) where alpha in (0,1]
-    require_k: require k consecutive points below threshold
+    Half-life = first index (optionally post-peak) where the curve stays below
+    threshold * reference for k consecutive points.
+    - reference is max(curve) on the (optionally) smoothed series.
+    - returns last index if it never crosses.
     """
     if not influence_curve:
         return -1
+
     x = list(influence_curve)
-    if smooth and smooth[0] == "ema":
-        alpha = float(smooth[1])
+
+    # optional smoothing
+    if smooth_ema_alpha and smooth_ema_alpha > 0:
         y = [x[0]]
+        a = float(smooth_ema_alpha)
         for v in x[1:]:
-            y.append(alpha*v + (1-alpha)*y[-1])
+            y.append(a * v + (1 - a) * y[-1])
         x = y
-    ref = x[0] if relative_to == "first" else max(x)
+
+    ref = max(x)
+    if ref <= 0:
+        return len(x) - 1  # degenerate flat/zero
+
+    start_idx = int(np.argmax(x)) if post_peak else 0
+    thresh = threshold * ref
+
     consec = 0
-    for i, v in enumerate(x):
-        if v < ref * threshold:
+    for i in range(start_idx, len(x)):
+        if x[i] < thresh:
             consec += 1
             if consec >= require_k:
                 return i
