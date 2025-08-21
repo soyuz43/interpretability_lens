@@ -62,3 +62,4 @@ Thumbs.db
 *.tsv
 *.npy
 *.npz
+environment.txt
