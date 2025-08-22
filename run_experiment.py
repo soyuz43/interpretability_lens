@@ -17,7 +17,6 @@ def load_llama3_3b():
         tokenizer.pad_token_id = tokenizer.eos_token_id
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        output_hidden_states=True,
         torch_dtype=torch.float16,
         device_map="auto",
         # Add pad_token_id if it was missing
