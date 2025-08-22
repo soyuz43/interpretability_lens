@@ -1,5 +1,6 @@
 # interpretability/projection.py
 
+import warnings
 import numpy as np
 from typing import List, Literal, Optional, Dict, Any
 from sklearn.decomposition import PCA
@@ -25,11 +26,11 @@ def _pca_project(matrix: np.ndarray, n_components: int) -> np.ndarray:
 def _safe_n_neighbors(requested: int, n_samples: int) -> int:
     """
     Compute a UMAP-safe neighbor count:
-    - must be at least 2
-    - must be at most n_samples - 1
+    - at least 2
+    - at most n_samples - 1
     """
     if n_samples <= 1:
-        return 1  # unused, we will not call UMAP with N <= 1
+        return 1  # unused; we won't run UMAP with N <= 1
     upper = max(1, n_samples - 1)
     return max(2, min(requested, upper))
 
@@ -39,6 +40,7 @@ def project_hidden_states(
     method: Literal["pca", "umap"] = "umap",
     n_components: int = 2,
     umap_args: Optional[Dict[str, Any]] = None,
+    suppress_umap_seed_warning: bool = True,
 ) -> np.ndarray:
     """
     Reduce high-dimensional hidden states to low-dimensional coordinates.
@@ -46,7 +48,7 @@ def project_hidden_states(
     Parameters
     ----------
     hidden_states : List[np.ndarray]
-        List of hidden state vectors per token (e.g., length N, each shape (H,)).
+        Per-token hidden state vectors (length N, each shape (H,)).
     method : {"pca","umap"}
         Dimensionality reduction method. Default "umap".
     n_components : int
@@ -56,12 +58,15 @@ def project_hidden_states(
           - n_neighbors: adaptively min(10, N-1) with floor=2
           - min_dist: 0.1
           - metric: "cosine"
-          - random_state: 42 (deterministic; set to None to favor parallelism)
+          - random_state: 42  (deterministic; set to None to regain parallelism)
+    suppress_umap_seed_warning : bool
+        If True (default), filter the specific UMAP warning that notes single-thread
+        behavior when random_state is set. Other warnings remain visible.
 
     Returns
     -------
     np.ndarray
-        Array of shape (N, n_components) with reduced coordinates.
+        (N, n_components) reduced coordinates.
     """
     if not hidden_states:
         raise ValueError("Empty hidden state list provided.")
@@ -73,7 +78,7 @@ def project_hidden_states(
         return _pca_project(matrix, n_components=n_components)
 
     elif method == "umap":
-        # PCA fallback for tiny sequences — avoids impossible neighbor constraints
+        # PCA fallback for tiny sequences—UMAP neighbor constraints become ill-posed
         if N < 3:
             return _pca_project(matrix, n_components=n_components)
 
@@ -82,15 +87,28 @@ def project_hidden_states(
             "n_neighbors": 10,
             "min_dist": 0.1,
             "metric": "cosine",
-            "random_state": 42,  # deterministic by default; set None to enable parallelism
+            "random_state": 42,  # deterministic by default; pass None to prefer parallelism
         }
         args = {**default_args, **(umap_args or {})}
 
-        # Enforce a safe n_neighbors based on N, regardless of override
+        # Enforce safe neighbors regardless of override
         args["n_neighbors"] = _safe_n_neighbors(int(args.get("n_neighbors", 10)), N)
 
         reducer = umap.UMAP(n_components=n_components, **args)
-        projected = reducer.fit_transform(matrix)
+
+        if suppress_umap_seed_warning and args.get("random_state", 42) is not None:
+            # Suppress only the specific seed/parallelism warning from umap.umap_
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"n_jobs value .* overridden to 1 by setting random_state.*",
+                    category=UserWarning,
+                    module=r"umap\.umap_",
+                )
+                projected = reducer.fit_transform(matrix)
+        else:
+            projected = reducer.fit_transform(matrix)
+
         return projected
 
     else:
