@@ -22,6 +22,18 @@ def _pca_project(matrix: np.ndarray, n_components: int) -> np.ndarray:
     return proj
 
 
+def _safe_n_neighbors(requested: int, n_samples: int) -> int:
+    """
+    Compute a UMAP-safe neighbor count:
+    - must be at least 2
+    - must be at most n_samples - 1
+    """
+    if n_samples <= 1:
+        return 1  # unused, we will not call UMAP with N <= 1
+    upper = max(1, n_samples - 1)
+    return max(2, min(requested, upper))
+
+
 def project_hidden_states(
     hidden_states: List[np.ndarray],
     method: Literal["pca", "umap"] = "umap",
@@ -41,7 +53,7 @@ def project_hidden_states(
         Number of output dimensions (default: 2).
     umap_args : dict, optional
         Extra args for UMAP. Defaults include:
-          - n_neighbors: adaptively min(10, N-1) but at least 2
+          - n_neighbors: adaptively min(10, N-1) with floor=2
           - min_dist: 0.1
           - metric: "cosine"
           - random_state: 42 (deterministic; set to None to favor parallelism)
@@ -61,27 +73,22 @@ def project_hidden_states(
         return _pca_project(matrix, n_components=n_components)
 
     elif method == "umap":
-        # Sensible defaults with determinism; allow overrides via umap_args
-        default_args: Dict[str, Any] = {
-            "min_dist": 0.1,
-            "metric": "cosine",
-            "random_state": 42,  # deterministic by default; set None to prefer speed/parallelism
-        }
-
-        # Adaptive neighbors: at least 2, at most N-1 (UMAP requirement)
-        default_n_neighbors = 10
-        nn = max(2, min(default_n_neighbors, max(1, N - 1)))
-        default_args["n_neighbors"] = nn
-
-        # Merge user overrides
-        args = {**default_args, **(umap_args or {})}
-
-        # If the sequence is too small for a meaningful UMAP (e.g., N < 3), fall back to PCA
+        # PCA fallback for tiny sequences — avoids impossible neighbor constraints
         if N < 3:
             return _pca_project(matrix, n_components=n_components)
 
-        # If determinism is requested (random_state is not None), UMAP will force single-threaded behavior.
-        # Users can pass {"random_state": None} in umap_args to trade determinism for parallelism.
+        # Defaults with determinism; allow user overrides
+        default_args: Dict[str, Any] = {
+            "n_neighbors": 10,
+            "min_dist": 0.1,
+            "metric": "cosine",
+            "random_state": 42,  # deterministic by default; set None to enable parallelism
+        }
+        args = {**default_args, **(umap_args or {})}
+
+        # Enforce a safe n_neighbors based on N, regardless of override
+        args["n_neighbors"] = _safe_n_neighbors(int(args.get("n_neighbors", 10)), N)
+
         reducer = umap.UMAP(n_components=n_components, **args)
         projected = reducer.fit_transform(matrix)
         return projected
