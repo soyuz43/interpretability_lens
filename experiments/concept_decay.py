@@ -4,14 +4,24 @@ import json
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
-# Import the function to extract hidden states for a specific layer
+
+# Hidden-state extraction (per token, per chosen layer)
 from interpretability.trace_extractor import extract_hidden_state_sequence
-# Import other necessary functions
+# Projection & drift metrics (for visualization/arc length)
 from interpretability.projection import project_hidden_states
 from interpretability.divergence_tracker import compute_semantic_drift, measure_half_life
+# Prompt manipulation
 from interpretability.injector import inject_probe
+# True metric in original space
+from interpretability.utils import cosine_similarity
 
-def log_results(results: dict, folder: str = "logs", fig: plt.Figure = None, batch_name: str = None) -> str:
+
+def log_results(
+    results: dict,
+    folder: str = "logs",
+    fig: plt.Figure = None,
+    batch_name: str = None,
+) -> str:
     """
     Save results dictionary to a timestamped JSON file in the logs directory.
     Optionally save a matplotlib figure to a PNG file with the same timestamp.
@@ -21,32 +31,45 @@ def log_results(results: dict, folder: str = "logs", fig: plt.Figure = None, bat
     final_folder = folder
     if batch_name:
         final_folder = os.path.join(folder, batch_name)
-        
+
     os.makedirs(final_folder, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_filename = os.path.join(final_folder, f"concept_decay_{timestamp}.json")
 
-    # Save JSON results
+    # Save JSON results (ensure serializable types)
     with open(json_filename, "w") as f:
-        # Ensure serializability (already handled in run_concept_decay_experiment, 
-        # but good practice to keep it here too if this function is called elsewhere)
         serializable_results = {
-            "concept": results["concept"],
-            "inject_position": results["inject_position"],
-            "injected_prompt": results["injected_prompt"],
-            "arc_length": float(results["arc_length"]),
-            "half_life": int(results["half_life"]),
-            "drift_curve": [float(val) for val in results["drift_curve"]],
+            "concept": results.get("concept"),
+            "inject_position": results.get("inject_position"),
+            "injected_prompt": results.get("injected_prompt"),
+            "arc_length": float(results.get("arc_length", 0.0)),
+            "half_life": int(results.get("half_life", -1)),
+            # Projection-space drift curve (for visualization trajectory)
+            "drift_curve": [float(val) for val in results.get("drift_curve", [])],
+            # Original-space cosine distance curve (used for half-life + plotting)
+            "cosine_from_start": [float(val) for val in results.get("cosine_from_start", [])],
         }
         json.dump(serializable_results, f, indent=2)
 
     # Save plot if provided
     if fig is not None:
         png_filename = os.path.join(final_folder, f"concept_decay_{timestamp}.png")
-        fig.savefig(png_filename, dpi=300, bbox_inches='tight') # Save with high DPI and tight layout
+        fig.savefig(png_filename, dpi=300, bbox_inches="tight")
         print(f"[✓] Plot saved to: {png_filename}")
 
-    return json_filename # Still return the JSON filename as before
+    return json_filename
+
+
+def _ema(series, alpha: float):
+    """Simple EMA smoothing; returns a new list."""
+    if not series:
+        return []
+    y = [series[0]]
+    a = float(alpha)
+    for v in series[1:]:
+        y.append(a * v + (1.0 - a) * y[-1])
+    return y
+
 
 def run_concept_decay_experiment(
     base_prompt: str,
@@ -56,95 +79,114 @@ def run_concept_decay_experiment(
     tokenizer,
     visualize: bool = True,
     save: bool = True,
-    layer_idx: int = -1, # Add layer_idx parameter
-    batch_name: str = None # Add batch_name parameter
+    layer_idx: int = -1,
+    batch_name: str = None,
 ) -> dict:
     """
     Run a full concept decay experiment:
-      1. Inject a concept into the prompt.
-      2. Extract hidden states during inference.
-      3. Project hidden states to 2D.
-      4. Analyze semantic drift.
-      5. Return metrics, optionally visualize and log output.
-    Parameters:
-    - base_prompt: str – initial neutral prompt
-    - concept: str – concept word/phrase to inject
-    - inject_pos: str – 'start', 'middle', or 'end'
-    - model, tokenizer – HuggingFace-compatible model objects
-    - visualize: bool – whether to show the drift curve
-    - save: bool – whether to save the results JSON and plot to disk
-    - layer_idx: int - Model layer to extract from (default: last layer)
-    - batch_name: str - Optional name for batch run, creates subdirectory in logs/
+      1. Inject a concept into the prompt (or no-op if concept is None/empty).
+      2. Extract hidden states during inference (chosen layer).
+      3. Project hidden states to 2D for visualization; compute drift/arc length.
+      4. Compute original-space cosine curve; measure half-life on this curve.
+      5. Return metrics and optionally visualize + log output.
+
     Returns:
-    - results: dict – containing arc length, half-life, drift curve, and prompt metadata
+      results: dict – arc_length (projection), half_life (original-space cosine),
+                       drift_curve (projection), cosine_from_start (original space),
+                       and prompt metadata.
     """
-    # Step 1: Construct probe-injected prompt
-    if concept is None:
-        full_prompt = base_prompt
+    # Step 1: Construct probe-injected prompt (baseline-safe)
+    full_prompt = inject_probe(base_prompt, concept, position=inject_pos)
+
+    # Step 2: Run model and capture hidden state trajectory (per-token vectors)
+    hidden_states = extract_hidden_state_sequence(
+        full_prompt, model, tokenizer, layer_idx=layer_idx
+    )  # List[np.ndarray], length = num_tokens
+
+    # Guard: if too few tokens, produce empty curves gracefully
+    num_tokens = len(hidden_states)
+    # Original-space cosine distance from the first token's hidden state
+    if num_tokens >= 2:
+        start_vec = hidden_states[0]
+        cosine_from_start = [1.0 - cosine_similarity(start_vec, v) for v in hidden_states[1:]]
     else:
-        full_prompt = inject_probe(base_prompt, concept, position=inject_pos)
-    
-    # Step 2: Run model and capture hidden state trajectory
-    # Use the specific layer extraction function and pass layer_idx
-    hidden_states = extract_hidden_state_sequence(full_prompt, model, tokenizer, layer_idx=layer_idx)
-    
-    # Step 3: Project to low-dimensional space for analysis
-    coords = project_hidden_states(hidden_states, method="umap")
-    
-    # Step 4: Measure semantic drift and half-life
+        cosine_from_start = []
+
+    # Step 3: Project to low-dimensional space for trajectory visualization
+    # (deterministic UMAP via random_state for reproducibility)
+    coords = project_hidden_states(
+        hidden_states,
+        method="umap",
+        umap_args={"n_neighbors": 10, "min_dist": 0.1, "metric": "cosine", "random_state": 42},
+    )
+
+    # Step 4: Compute drift metrics in projection space, but measure half-life on original-space cosine
     drift_metrics = compute_semantic_drift(coords)
-    half_life = measure_half_life(drift_metrics["distance_from_origin"])
-    
-    # Ensure all values are JSON serializable
+    # Robust half-life (defaults: threshold=0.5, EMA=0.2, k=2, post_peak=True)
+    half_life = measure_half_life(cosine_from_start)
+
+    # Prepare results (JSON-serializable)
     results = {
         "concept": concept,
         "inject_position": inject_pos,
         "injected_prompt": full_prompt,
-        "arc_length": float(drift_metrics["arc_length"]), # Convert to Python float
-        "half_life": int(half_life),                     # Convert to Python int
-        "drift_curve": [float(val) for val in drift_metrics["distance_from_origin"]], # Convert list of np.float32 to list of Python floats
+        "arc_length": float(drift_metrics["arc_length"]),
+        "half_life": int(half_life),
+        "drift_curve": [float(val) for val in drift_metrics["distance_from_origin"]],
+        "cosine_from_start": [float(val) for val in cosine_from_start],
     }
 
-    fig = None # Initialize figure variable
-    
-    # Step 5: Visualization
-    # Create the plot if we need to show it OR save it
-    if visualize or save: 
-        fig = plt.figure(figsize=(10, 5)) # Assign the figure object
-        
-        plt.plot(drift_metrics["distance_from_origin"], label="Distance from origin")
-        plt.axhline(
-            y=0.5 * drift_metrics["distance_from_origin"][0],
-            color="r", linestyle="--", label="Half-life threshold"
-        )
-        plt.axvline(x=half_life, color="g", linestyle=":", label="Half-life index")
-        plt.title(f"Concept Decay: '{concept}' Influence Over Tokens")
-        plt.xlabel("Token Index")
-        plt.ylabel("Distance from start (projection space)")
+    # Step 5: Visualization (plot original-space cosine curve; projection only for arc length)
+    fig = None
+    if visualize or save:
+        fig = plt.figure(figsize=(10, 5))
+
+        # Plot the measurement curve we used for half-life
+        plt.plot(cosine_from_start, label="Cosine distance from start (original space)")
+
+        # Draw threshold consistent with measure_half_life defaults
+        # (smooth with EMA, reference = post-peak max, threshold = 0.5)
+        smooth_ema_alpha = 0.2
+        threshold = 0.5
+        post_peak = True
+
+        x = list(cosine_from_start)
+        if smooth_ema_alpha and smooth_ema_alpha > 0:
+            x = _ema(x, smooth_ema_alpha)
+
+        ref = max(x) if x else 0.0
+        thresh_val = threshold * ref if x else 0.0
+        if x:
+            # Optional: could visualize the post-peak start index if desired
+            # start_idx = int(np.argmax(x)) if post_peak else 0
+            plt.axhline(
+                y=thresh_val,
+                color="r",
+                linestyle="--",
+                label="Half-life threshold (cosine)",
+            )
+
+        # Half-life index line (indexing is on the curve which starts at token 1)
+        if half_life >= 0 and len(cosine_from_start) > 0:
+            plt.axvline(x=half_life, color="g", linestyle=":", label="Half-life index")
+
+        title_concept = concept if (concept is not None and str(concept).strip() != "") else "baseline"
+        plt.title(f"Concept Decay: '{title_concept}' influence over tokens")
+        plt.xlabel("Token Index (starting at 1)")
+        plt.ylabel("Cosine distance from start (original space)")
         plt.legend()
         plt.tight_layout()
-        # Don't call plt.show() here yet
 
-    # Step 6: Optional logging, visualization, and cleanup
+    # Step 6: Optional logging, visualization, and cleanup (save → show → close)
     if save:
-        # Save results and plot (if a figure was created)
         filename = log_results(results, fig=fig, batch_name=batch_name)
         print(f"[✓] Results logged to: {filename}")
 
-    # Show the plot only if visualize is True and a figure was created
     if visualize and fig is not None:
         plt.show()
 
-    # Always close the figure if it exists, to free memory
     if fig is not None:
         plt.close(fig)
         fig = None
-
-    # Show the plot only if visualize is True and we created one
-    if visualize and fig is not None:
-        plt.show()
-    elif fig is not None:
-        # Make sure to close the figure if it was created but not shown or saved
-        plt.close(fig)
 
     return results
